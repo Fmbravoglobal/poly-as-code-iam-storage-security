@@ -1,4 +1,4 @@
-Aoutput "bucket_name" {
+output "bucket_name" {
   description = "Name of the secure S3 bucket"
   value       = aws_s3_bucket.secure_bucket.bucket
 }
