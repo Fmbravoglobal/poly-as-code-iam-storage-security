@@ -17,3 +17,8 @@ output "policy_arn" {
   description = "ARN of the least privilege IAM policy"
   value       = aws_iam_policy.s3_readonly_policy.arn
 }
+
+output "sns_topic_arn" {
+  description = "SNS topic ARN for S3 event notifications"
+  value       = aws_sns_topic.bucket_events.arn
+}
