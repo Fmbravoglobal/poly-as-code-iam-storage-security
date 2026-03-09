@@ -6,9 +6,16 @@ on:
       - main
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   terraform-security:
     runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Checkout Repository
@@ -38,6 +45,6 @@ jobs:
       - name: Run Checkov Security Scan
         uses: bridgecrewio/checkov-action@v12
         with:
-          directory: .
+          directory: terraform
           quiet: true
           soft_fail: true
