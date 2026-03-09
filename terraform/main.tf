@@ -13,18 +13,40 @@ provider "aws" {
   region = var.aws_region
 }
 
-# Secure S3 bucket
+############################################
+# KMS KEY FOR S3 ENCRYPTION
+############################################
+resource "aws_kms_key" "s3_key" {
+  description             = "KMS key for secure S3 bucket encryption"
+  deletion_window_in_days = 10
+  enable_key_rotation     = true
+
+  tags = {
+    Name        = "s3-kms-key"
+    Environment = "dev"
+    Project     = "poly-as-code-iam-storage-security"
+  }
+}
+
+resource "aws_kms_alias" "s3_key_alias" {
+  name          = "alias/secure-s3-key"
+  target_key_id = aws_kms_key.s3_key.key_id
+}
+
+############################################
+# MAIN SECURE S3 BUCKET
+############################################
+#checkov:skip=CKV_AWS_144:Cross-region replication is outside the scope of this demo governance project
 resource "aws_s3_bucket" "secure_bucket" {
   bucket = var.bucket_name
 
   tags = {
     Name        = var.bucket_name
     Environment = "dev"
-    Project     = "policy-as-code-iam-storage-security"
+    Project     = "poly-as-code-iam-storage-security"
   }
 }
 
-# Block all public access
 resource "aws_s3_bucket_public_access_block" "secure_bucket" {
   bucket                  = aws_s3_bucket.secure_bucket.id
   block_public_acls       = true
@@ -33,18 +55,19 @@ resource "aws_s3_bucket_public_access_block" "secure_bucket" {
   restrict_public_buckets = true
 }
 
-# Server-side encryption
 resource "aws_s3_bucket_server_side_encryption_configuration" "secure_bucket" {
   bucket = aws_s3_bucket.secure_bucket.id
 
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
+      kms_master_key_id = aws_kms_key.s3_key.arn
+      sse_algorithm     = "aws:kms"
     }
+
+    bucket_key_enabled = true
   }
 }
 
-# Enable versioning
 resource "aws_s3_bucket_versioning" "secure_bucket" {
   bucket = aws_s3_bucket.secure_bucket.id
 
@@ -53,7 +76,6 @@ resource "aws_s3_bucket_versioning" "secure_bucket" {
   }
 }
 
-# Lifecycle policy
 resource "aws_s3_bucket_lifecycle_configuration" "secure_bucket" {
   bucket = aws_s3_bucket.secure_bucket.id
 
@@ -73,7 +95,127 @@ resource "aws_s3_bucket_lifecycle_configuration" "secure_bucket" {
   depends_on = [aws_s3_bucket_versioning.secure_bucket]
 }
 
-# IAM role for secure app access
+############################################
+# LOGGING BUCKET
+############################################
+resource "aws_s3_bucket" "log_bucket" {
+  bucket = "${var.bucket_name}-logs"
+
+  tags = {
+    Name        = "${var.bucket_name}-logs"
+    Environment = "dev"
+    Project     = "poly-as-code-iam-storage-security"
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "log_bucket" {
+  bucket                  = aws_s3_bucket.log_bucket.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "log_bucket" {
+  bucket = aws_s3_bucket.log_bucket.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      kms_master_key_id = aws_kms_key.s3_key.arn
+      sse_algorithm     = "aws:kms"
+    }
+
+    bucket_key_enabled = true
+  }
+}
+
+resource "aws_s3_bucket_versioning" "log_bucket" {
+  bucket = aws_s3_bucket.log_bucket.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "log_bucket" {
+  bucket = aws_s3_bucket.log_bucket.id
+
+  rule {
+    id     = "log-retention"
+    status = "Enabled"
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+
+    expiration {
+      days = 90
+    }
+  }
+
+  depends_on = [aws_s3_bucket_versioning.log_bucket]
+}
+
+resource "aws_s3_bucket_logging" "secure_bucket_logging" {
+  bucket        = aws_s3_bucket.secure_bucket.id
+  target_bucket = aws_s3_bucket.log_bucket.id
+  target_prefix = "access-logs/"
+}
+
+############################################
+# SNS TOPIC FOR S3 EVENT NOTIFICATIONS
+############################################
+resource "aws_sns_topic" "bucket_events" {
+  name              = "${var.bucket_name}-events"
+  kms_master_key_id = aws_kms_key.s3_key.arn
+
+  tags = {
+    Name        = "${var.bucket_name}-events"
+    Environment = "dev"
+    Project     = "poly-as-code-iam-storage-security"
+  }
+}
+
+data "aws_iam_policy_document" "bucket_events_policy" {
+  statement {
+    sid    = "AllowS3Publish"
+    effect = "Allow"
+
+    principals {
+      type        = "Service"
+      identifiers = ["s3.amazonaws.com"]
+    }
+
+    actions   = ["SNS:Publish"]
+    resources = [aws_sns_topic.bucket_events.arn]
+
+    condition {
+      test     = "ArnLike"
+      variable = "aws:SourceArn"
+      values   = [aws_s3_bucket.secure_bucket.arn]
+    }
+  }
+}
+
+resource "aws_sns_topic_policy" "bucket_events" {
+  arn    = aws_sns_topic.bucket_events.arn
+  policy = data.aws_iam_policy_document.bucket_events_policy.json
+}
+
+resource "aws_s3_bucket_notification" "secure_bucket" {
+  bucket = aws_s3_bucket.secure_bucket.id
+
+  topic {
+    topic_arn = aws_sns_topic.bucket_events.arn
+    events    = ["s3:ObjectCreated:*", "s3:ObjectRemoved:*"]
+  }
+
+  depends_on = [aws_sns_topic_policy.bucket_events]
+}
+
+############################################
+# IAM ROLE
+############################################
 resource "aws_iam_role" "app_role" {
   name = "secure-app-role"
 
@@ -91,12 +233,15 @@ resource "aws_iam_role" "app_role" {
   })
 
   tags = {
-    Name    = "secure-app-role"
-    Project = "policy-as-code-iam-storage-security"
+    Name        = "secure-app-role"
+    Environment = "dev"
+    Project     = "poly-as-code-iam-storage-security"
   }
 }
 
-# Least-privilege IAM policy
+############################################
+# LEAST-PRIVILEGE IAM POLICY
+############################################
 resource "aws_iam_policy" "s3_readonly_policy" {
   name        = "secure-s3-readonly-policy"
   description = "Least privilege policy for reading from secure S3 bucket"
@@ -128,8 +273,9 @@ resource "aws_iam_policy" "s3_readonly_policy" {
   })
 
   tags = {
-    Name    = "secure-s3-readonly-policy"
-    Project = "policy-as-code-iam-storage-security"
+    Name        = "secure-s3-readonly-policy"
+    Environment = "dev"
+    Project     = "poly-as-code-iam-storage-security"
   }
 }
 
