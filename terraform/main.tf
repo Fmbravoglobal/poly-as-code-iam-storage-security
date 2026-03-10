@@ -13,6 +13,8 @@ provider "aws" {
   region = var.aws_region
 }
 
+data "aws_caller_identity" "current" {}
+
 ############################################
 # KMS KEY FOR S3 ENCRYPTION
 ############################################
@@ -20,6 +22,22 @@ resource "aws_kms_key" "s3_key" {
   description             = "KMS key for secure S3 bucket encryption"
   deletion_window_in_days = 10
   enable_key_rotation     = true
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Id      = "key-default-1"
+    Statement = [
+      {
+        Sid    = "EnableRootPermissions"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
+        }
+        Action   = "kms:*"
+        Resource = "*"
+      }
+    ]
+  })
 
   tags = {
     Name        = "s3-kms-key"
@@ -98,6 +116,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "secure_bucket" {
 ############################################
 # LOGGING BUCKET
 ############################################
+#checkov:skip=CKV_AWS_144:Cross-region replication is outside the scope of this demo governance project
 resource "aws_s3_bucket" "log_bucket" {
   bucket = "${var.bucket_name}-logs"
 
@@ -195,6 +214,25 @@ data "aws_iam_policy_document" "bucket_events_policy" {
       values   = [aws_s3_bucket.secure_bucket.arn]
     }
   }
+
+  statement {
+    sid    = "AllowLogBucketPublish"
+    effect = "Allow"
+
+    principals {
+      type        = "Service"
+      identifiers = ["s3.amazonaws.com"]
+    }
+
+    actions   = ["SNS:Publish"]
+    resources = [aws_sns_topic.bucket_events.arn]
+
+    condition {
+      test     = "ArnLike"
+      variable = "aws:SourceArn"
+      values   = [aws_s3_bucket.log_bucket.arn]
+    }
+  }
 }
 
 resource "aws_sns_topic_policy" "bucket_events" {
@@ -202,12 +240,23 @@ resource "aws_sns_topic_policy" "bucket_events" {
   policy = data.aws_iam_policy_document.bucket_events_policy.json
 }
 
-resource "aws_s3_bucket_notification" "secure_bucket" {
+resource "aws_s3_bucket_notification" "secure_bucket_notification" {
   bucket = aws_s3_bucket.secure_bucket.id
 
   topic {
     topic_arn = aws_sns_topic.bucket_events.arn
     events    = ["s3:ObjectCreated:*", "s3:ObjectRemoved:*"]
+  }
+
+  depends_on = [aws_sns_topic_policy.bucket_events]
+}
+
+resource "aws_s3_bucket_notification" "log_bucket_notification" {
+  bucket = aws_s3_bucket.log_bucket.id
+
+  topic {
+    topic_arn = aws_sns_topic.bucket_events.arn
+    events    = ["s3:ObjectCreated:*"]
   }
 
   depends_on = [aws_sns_topic_policy.bucket_events]
