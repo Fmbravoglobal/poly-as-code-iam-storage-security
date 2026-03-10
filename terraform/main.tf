@@ -197,7 +197,7 @@ resource "aws_sns_topic" "bucket_events" {
 
 data "aws_iam_policy_document" "bucket_events_policy" {
   statement {
-    sid    = "AllowS3Publish"
+    sid    = "AllowSecureBucketPublish"
     effect = "Allow"
 
     principals {
