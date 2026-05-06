@@ -1,4 +1,4 @@
-# poly-as-code-iam-storage-security
+# policy-as-code-iam-storage-security
 
 [![Security Pipeline](https://github.com/Fmbravoglobal/poly-as-code-iam-storage-security/actions/workflows/security-pipeline.yml/badge.svg)](https://github.com/Fmbravoglobal/poly-as-code-iam-storage-security/actions/workflows/security-pipeline.yml)
 
